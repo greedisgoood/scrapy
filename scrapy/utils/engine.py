@@ -1,10 +1,16 @@
 """Some debugging functions for working with the Scrapy engine"""
 
+from __future__ import annotations
+
 # used in global tests code
 from time import time  # noqa: F401
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from scrapy.core.engine import ExecutionEngine
 
 
-def get_engine_status(engine):
+def get_engine_status(engine: ExecutionEngine) -> list[tuple[str, object]]:
     """Return a report of the current engine status"""
     tests = [
         "time()-engine.start_time",
@@ -12,28 +18,27 @@ def get_engine_status(engine):
         "engine.scraper.is_idle()",
         "engine.spider.name",
         "engine.spider_is_idle()",
-        "engine.slot.closing",
-        "len(engine.slot.inprogress)",
-        "len(engine.slot.scheduler.dqs or [])",
-        "len(engine.slot.scheduler.mqs)",
+        "engine._slot.closing",
+        "len(engine._slot.inprogress)",
+        "len(engine.scheduler.dqs or [])",
+        "len(engine.scheduler.mqs)",
         "len(engine.scraper.slot.queue)",
         "len(engine.scraper.slot.active)",
-        "engine.scraper.slot.active_size",
+        "engine.response_active_size",
         "engine.scraper.slot.itemproc_size",
-        "engine.scraper.slot.needs_backout()",
     ]
 
-    checks = []
+    checks: list[tuple[str, object]] = []
     for test in tests:
         try:
-            checks += [(test, eval(test))]
+            checks += [(test, eval(test))]  # noqa: S307
         except Exception as e:
             checks += [(test, f"{type(e).__name__} (exception)")]
 
     return checks
 
 
-def format_engine_status(engine=None):
+def format_engine_status(engine: ExecutionEngine) -> str:
     checks = get_engine_status(engine)
     s = "Execution engine status\n\n"
     for test, result in checks:
@@ -43,5 +48,5 @@ def format_engine_status(engine=None):
     return s
 
 
-def print_engine_status(engine):
+def print_engine_status(engine: ExecutionEngine) -> None:
     print(format_engine_status(engine))

@@ -1,214 +1,306 @@
-import shutil
-import tempfile
-import unittest
-
-import queuelib
-
-from scrapy.squeues import (
-    PickleFifoDiskQueue,
-    PickleLifoDiskQueue,
-    MarshalFifoDiskQueue,
-    MarshalLifoDiskQueue,
-    FifoMemoryQueue,
-    LifoMemoryQueue,
-)
-from scrapy.http import Request
-from scrapy.spiders import Spider
-from scrapy.utils.test import get_crawler
-
-
 """
 Queues that handle requests
 """
 
+from __future__ import annotations
 
-class BaseQueueTestCase(unittest.TestCase):
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix="scrapy-queue-tests-")
-        self.qpath = self.tempfilename()
-        self.qdir = self.mkdtemp()
-        self.crawler = get_crawler(Spider)
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
 
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir)
+import pytest
 
-    def tempfilename(self):
-        with tempfile.NamedTemporaryFile(dir=self.tmpdir) as nf:
-            return nf.name
+from scrapy.http import Request
+from scrapy.spiders import Spider
+from scrapy.squeues import (
+    FifoMemoryQueue,
+    LifoMemoryQueue,
+    MarshalFifoDiskQueue,
+    MarshalFifoSQLiteQueue,
+    MarshalLifoDiskQueue,
+    MarshalLifoSQLiteQueue,
+    PickleFifoDiskQueue,
+    PickleFifoSQLiteQueue,
+    PickleLifoDiskQueue,
+    PickleLifoSQLiteQueue,
+)
+from scrapy.utils.misc import build_from_crawler
+from scrapy.utils.test import get_crawler
 
-    def mkdtemp(self):
-        return tempfile.mkdtemp(dir=self.tmpdir)
+if TYPE_CHECKING:
+    from collections.abc import Generator
+    from pathlib import Path
+
+    import queuelib
+
+    from scrapy.crawler import Crawler
 
 
-class RequestQueueTestMixin:
-    def queue(self):
-        raise NotImplementedError()
+@pytest.fixture
+def crawler() -> Crawler:
+    return get_crawler(Spider)
 
-    def test_one_element_with_peek(self):
-        if not hasattr(queuelib.queue.FifoMemoryQueue, "peek"):
-            raise unittest.SkipTest("The queuelib queues do not define peek")
-        q = self.queue()
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.peek())
-        self.assertIsNone(q.pop())
+
+class TestRequestQueueBase(ABC):
+    @property
+    @abstractmethod
+    def is_fifo(self) -> bool:
+        raise NotImplementedError
+
+    def test_one_element(self, q: queuelib.queue.BaseQueue) -> None:
+        assert len(q) == 0
+        assert q.peek() is None
+        assert q.pop() is None
         req = Request("http://www.example.com")
         q.push(req)
-        self.assertEqual(len(q), 1)
-        self.assertEqual(q.peek().url, req.url)
-        self.assertEqual(q.pop().url, req.url)
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.peek())
-        self.assertIsNone(q.pop())
-        q.close()
+        assert len(q) == 1
+        result = q.peek()
+        assert result is not None
+        assert result.url == req.url
+        result = q.pop()
+        assert result is not None
+        assert result.url == req.url
+        assert len(q) == 0
+        assert q.peek() is None
+        assert q.pop() is None
 
-    def test_one_element_without_peek(self):
-        if hasattr(queuelib.queue.FifoMemoryQueue, "peek"):
-            raise unittest.SkipTest("The queuelib queues define peek")
-        q = self.queue()
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.pop())
-        req = Request("http://www.example.com")
+    def test_headers(self, q: queuelib.queue.BaseQueue) -> None:
+        req = Request(
+            "http://www.example.com",
+            headers=[("X-Multi", "a"), ("x-multi", "b"), ("Accept", None)],
+        )
         q.push(req)
-        self.assertEqual(len(q), 1)
-        with self.assertRaises(NotImplementedError, msg="The underlying queue class does not implement 'peek'"):
-            q.peek()
-        self.assertEqual(q.pop().url, req.url)
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.pop())
-        q.close()
+        result = q.pop()
+        assert result is not None
+        assert result.headers == req.headers
 
-
-class FifoQueueMixin(RequestQueueTestMixin):
-    def test_fifo_with_peek(self):
-        if not hasattr(queuelib.queue.FifoMemoryQueue, "peek"):
-            raise unittest.SkipTest("The queuelib queues do not define peek")
-        q = self.queue()
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.peek())
-        self.assertIsNone(q.pop())
+    def test_order(self, q: queuelib.queue.BaseQueue) -> None:
+        assert len(q) == 0
+        assert q.peek() is None
+        assert q.pop() is None
         req1 = Request("http://www.example.com/1")
         req2 = Request("http://www.example.com/2")
         req3 = Request("http://www.example.com/3")
         q.push(req1)
         q.push(req2)
         q.push(req3)
-        self.assertEqual(len(q), 3)
-        self.assertEqual(q.peek().url, req1.url)
-        self.assertEqual(q.pop().url, req1.url)
-        self.assertEqual(len(q), 2)
-        self.assertEqual(q.peek().url, req2.url)
-        self.assertEqual(q.pop().url, req2.url)
-        self.assertEqual(len(q), 1)
-        self.assertEqual(q.peek().url, req3.url)
-        self.assertEqual(q.pop().url, req3.url)
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.peek())
-        self.assertIsNone(q.pop())
-        q.close()
-
-    def test_fifo_without_peek(self):
-        if hasattr(queuelib.queue.FifoMemoryQueue, "peek"):
-            raise unittest.SkipTest("The queuelib queues do not define peek")
-        q = self.queue()
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.pop())
-        req1 = Request("http://www.example.com/1")
-        req2 = Request("http://www.example.com/2")
-        req3 = Request("http://www.example.com/3")
-        q.push(req1)
-        q.push(req2)
-        q.push(req3)
-        with self.assertRaises(NotImplementedError, msg="The underlying queue class does not implement 'peek'"):
-            q.peek()
-        self.assertEqual(len(q), 3)
-        self.assertEqual(q.pop().url, req1.url)
-        self.assertEqual(len(q), 2)
-        self.assertEqual(q.pop().url, req2.url)
-        self.assertEqual(len(q), 1)
-        self.assertEqual(q.pop().url, req3.url)
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.pop())
-        q.close()
+        reqs = [req1, req2, req3] if self.is_fifo else [req3, req2, req1]
+        for i, req in enumerate(reqs):
+            assert len(q) == 3 - i
+            result = q.peek()
+            assert result is not None
+            assert result.url == req.url
+            result = q.pop()
+            assert result is not None
+            assert result.url == req.url
+        assert len(q) == 0
+        assert q.peek() is None
+        assert q.pop() is None
 
 
-class LifoQueueMixin(RequestQueueTestMixin):
-    def test_lifo_with_peek(self):
-        if not hasattr(queuelib.queue.FifoMemoryQueue, "peek"):
-            raise unittest.SkipTest("The queuelib queues do not define peek")
-        q = self.queue()
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.peek())
-        self.assertIsNone(q.pop())
-        req1 = Request("http://www.example.com/1")
-        req2 = Request("http://www.example.com/2")
-        req3 = Request("http://www.example.com/3")
-        q.push(req1)
-        q.push(req2)
-        q.push(req3)
-        self.assertEqual(len(q), 3)
-        self.assertEqual(q.peek().url, req3.url)
-        self.assertEqual(q.pop().url, req3.url)
-        self.assertEqual(len(q), 2)
-        self.assertEqual(q.peek().url, req2.url)
-        self.assertEqual(q.pop().url, req2.url)
-        self.assertEqual(len(q), 1)
-        self.assertEqual(q.peek().url, req1.url)
-        self.assertEqual(q.pop().url, req1.url)
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.peek())
-        self.assertIsNone(q.pop())
-        q.close()
+class TestPickleFifoDiskQueueRequest(TestRequestQueueBase):
+    is_fifo = True
 
-    def test_lifo_without_peek(self):
-        if hasattr(queuelib.queue.FifoMemoryQueue, "peek"):
-            raise unittest.SkipTest("The queuelib queues do not define peek")
-        q = self.queue()
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.pop())
-        req1 = Request("http://www.example.com/1")
-        req2 = Request("http://www.example.com/2")
-        req3 = Request("http://www.example.com/3")
-        q.push(req1)
-        q.push(req2)
-        q.push(req3)
-        with self.assertRaises(NotImplementedError, msg="The underlying queue class does not implement 'peek'"):
-            q.peek()
-        self.assertEqual(len(q), 3)
-        self.assertEqual(q.pop().url, req3.url)
-        self.assertEqual(len(q), 2)
-        self.assertEqual(q.pop().url, req2.url)
-        self.assertEqual(len(q), 1)
-        self.assertEqual(q.pop().url, req1.url)
-        self.assertEqual(len(q), 0)
-        self.assertIsNone(q.pop())
-        q.close()
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            PickleFifoDiskQueue, crawler, key=str(tmp_path / "pickle" / "fifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
 
 
-class PickleFifoDiskQueueRequestTest(FifoQueueMixin, BaseQueueTestCase):
-    def queue(self):
-        return PickleFifoDiskQueue.from_crawler(crawler=self.crawler, key="pickle/fifo")
+class TestPickleLifoDiskQueueRequest(TestRequestQueueBase):
+    is_fifo = False
+
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            PickleLifoDiskQueue, crawler, key=str(tmp_path / "pickle" / "lifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
 
 
-class PickleLifoDiskQueueRequestTest(LifoQueueMixin, BaseQueueTestCase):
-    def queue(self):
-        return PickleLifoDiskQueue.from_crawler(crawler=self.crawler, key="pickle/lifo")
+class TestMarshalFifoDiskQueueRequest(TestRequestQueueBase):
+    is_fifo = True
+
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            MarshalFifoDiskQueue, crawler, key=str(tmp_path / "marshal" / "fifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
 
 
-class MarshalFifoDiskQueueRequestTest(FifoQueueMixin, BaseQueueTestCase):
-    def queue(self):
-        return MarshalFifoDiskQueue.from_crawler(crawler=self.crawler, key="marshal/fifo")
+class TestMarshalLifoDiskQueueRequest(TestRequestQueueBase):
+    is_fifo = False
+
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            MarshalLifoDiskQueue, crawler, key=str(tmp_path / "marshal" / "lifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
 
 
-class MarshalLifoDiskQueueRequestTest(LifoQueueMixin, BaseQueueTestCase):
-    def queue(self):
-        return MarshalLifoDiskQueue.from_crawler(crawler=self.crawler, key="marshal/lifo")
+class TestPickleFifoSQLiteQueueRequest(TestRequestQueueBase):
+    is_fifo = True
+
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            PickleFifoSQLiteQueue, crawler, key=str(tmp_path / "pickle" / "fifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
 
 
-class FifoMemoryQueueRequestTest(FifoQueueMixin, BaseQueueTestCase):
-    def queue(self):
-        return FifoMemoryQueue.from_crawler(crawler=self.crawler)
+class TestPickleLifoSQLiteQueueRequest(TestRequestQueueBase):
+    is_fifo = False
+
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            PickleLifoSQLiteQueue, crawler, key=str(tmp_path / "pickle" / "lifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
 
 
-class LifoMemoryQueueRequestTest(LifoQueueMixin, BaseQueueTestCase):
-    def queue(self):
-        return LifoMemoryQueue.from_crawler(crawler=self.crawler)
+class TestMarshalFifoSQLiteQueueRequest(TestRequestQueueBase):
+    is_fifo = True
+
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            MarshalFifoSQLiteQueue, crawler, key=str(tmp_path / "marshal" / "fifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
+
+
+class TestMarshalLifoSQLiteQueueRequest(TestRequestQueueBase):
+    is_fifo = False
+
+    @pytest.fixture
+    def q(
+        self, crawler: Crawler, tmp_path: Path
+    ) -> Generator[queuelib.queue.BaseQueue]:
+        queue = build_from_crawler(
+            MarshalLifoSQLiteQueue, crawler, key=str(tmp_path / "marshal" / "lifo")
+        )
+        try:
+            yield queue
+        finally:
+            queue.close()
+
+
+@pytest.mark.parametrize(
+    "queue_cls",
+    [
+        PickleFifoSQLiteQueue,
+        PickleLifoSQLiteQueue,
+        MarshalFifoSQLiteQueue,
+        MarshalLifoSQLiteQueue,
+    ],
+)
+def test_sqlite_queue_survives_unclean_shutdown(
+    crawler: Crawler, tmp_path: Path, queue_cls: Any
+) -> None:
+    key = str(tmp_path / "queue")
+    queue = queue_cls.from_crawler(crawler=crawler, key=key)
+    queue.push(Request("https://toscrape.com"))
+    # No close(), as if the process had been killed. The connection is closed
+    # directly instead, since on Windows the file cannot be removed later while
+    # it is still open.
+    queue._db.close()
+
+    queue = queue_cls.from_crawler(crawler=crawler, key=key)
+    try:
+        assert len(queue) == 1
+        request = queue.pop()
+        assert request is not None
+        assert request.url == "https://toscrape.com"
+    finally:
+        queue.close()
+
+
+@pytest.mark.parametrize(
+    ("queue_cls", "is_fifo"),
+    [
+        (PickleFifoDiskQueue, True),
+        (PickleLifoDiskQueue, False),
+        (MarshalFifoDiskQueue, True),
+        (MarshalLifoDiskQueue, False),
+        (PickleFifoSQLiteQueue, True),
+        (PickleLifoSQLiteQueue, False),
+        (MarshalFifoSQLiteQueue, True),
+        (MarshalLifoSQLiteQueue, False),
+    ],
+)
+def test_close_reopen(
+    crawler: Crawler, tmp_path: Path, queue_cls: Any, is_fifo: bool
+) -> None:
+    key = str(tmp_path / "queue")
+    urls = [f"https://example.com/{i}" for i in range(4)]
+    queue = build_from_crawler(queue_cls, crawler, key=key)
+    for url in urls:
+        queue.push(Request(url))
+    queue.pop()
+    queue.close()
+
+    expected = urls[1:] if is_fifo else urls[-2::-1]
+    queue = build_from_crawler(queue_cls, crawler, key=key)
+    try:
+        assert len(queue) == 3
+        assert queue.peek().url == expected[0]
+        assert [queue.pop().url for _ in expected] == expected
+        assert queue.pop() is None
+    finally:
+        queue.close()
+
+
+class TestFifoMemoryQueueRequest(TestRequestQueueBase):
+    is_fifo = True
+
+    @pytest.fixture
+    def q(self, crawler: Crawler) -> queuelib.queue.BaseQueue:
+        return build_from_crawler(FifoMemoryQueue, crawler)
+
+
+class TestLifoMemoryQueueRequest(TestRequestQueueBase):
+    is_fifo = False
+
+    @pytest.fixture
+    def q(self, crawler: Crawler) -> queuelib.queue.BaseQueue:
+        return build_from_crawler(LifoMemoryQueue, crawler)
